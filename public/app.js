@@ -20,6 +20,9 @@ const state = {
   _pqSig: null,           // 查询面板场景/变量签名（避免每次编辑都重建下拉框）
   probResult: null,       // 最近一次结局概率推演结果
   probStale: false,       // 推演之后剧情又被编辑过
+  fcResult: null,         // 最近一次结局必经抉择结果
+  fcStale: false,         // 必经分析之后剧情或起点又被修改过
+  fcBypasses: {},         // 各结局已请求的绕开反例：{ [sceneId]: { uid, result, loading, error } }
   covResult: null,        // 最近一次选项覆盖路线结果
   covStale: false,        // 生成路线之后剧情又被编辑过
   covReplay: null,        // 逐步回放状态 { routeIndex, uids, result, loading, cursor }
@@ -83,6 +86,9 @@ async function openStory(id) {
   state._pqSig = null;
   state.probResult = null;
   state.probStale = false;
+  state.fcResult = null;
+  state.fcStale = false;
+  state.fcBypasses = {};
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
@@ -149,6 +155,9 @@ async function deleteStory() {
   state._pqSig = null;
   state.probResult = null;
   state.probStale = false;
+  state.fcResult = null;
+  state.fcStale = false;
+  state.fcBypasses = {};
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
@@ -197,6 +206,7 @@ function renderAll() {
   renderAnalysis();
   renderPathQueryPanel();
   renderProbabilityPanel();
+  renderForcedPanel();
   renderCoveragePanel();
   renderDetail(null);
 }
@@ -515,12 +525,14 @@ function markDirty(rerender) {
   if (state.diff) state.diffStale = true;
   markPathQueryStale();
   markProbabilityStale();
+  markForcedStale();
   markCoverageStale();
   renderSaveStatus();
   if (rerender) rerender();
   else renderAnalysis();
   renderPathQueryPanel(); // 内部有签名缓存，场景/变量未变时仅刷新过期提示与结果
   renderProbabilityPanel(); // 仅刷新过期提示与已展示的结果，不重新推演
+  renderForcedPanel(); // 仅刷新过期提示与已展示的结果，不重新分析
   renderCoveragePanel(); // 仅刷新过期提示与已展示的路线，不重新生成
   clearTimeout(reanalyzeTimer);
   reanalyzeTimer = setTimeout(() => runAnalysis(true), 500);
@@ -1148,6 +1160,324 @@ function renderProbabilityResult() {
       box.appendChild(row);
     }
   }
+}
+
+/* ============================================================
+ * 结局必经抉择
+ * ============================================================ */
+function markForcedStale() {
+  if (!state.fcResult) return;
+  state.fcStale = true;
+  const el = $('fcStale');
+  if (el) el.hidden = false;
+}
+
+async function runForcedChoices() {
+  if (!state.story) return;
+  try {
+    // 对编辑中的未保存草稿直接分析（不落盘）
+    state.fcResult = await api('POST', '/api/forced-choice', state.story);
+    state.fcStale = false;
+    state.fcBypasses = {};
+    renderForcedPanel();
+  } catch (e) {
+    toast(`必经抉择分析失败：${e.message}`);
+  }
+}
+
+/** 请求一条绕开指定选项仍到达该结局的反例路线（仅非必经选项能找到） */
+async function runForcedBypass(sceneId, uid) {
+  if (!state.story || !state.fcResult) return;
+  const slot = state.fcBypasses[sceneId] || {};
+  state.fcBypasses[sceneId] = { ...slot, [uid]: { uid, result: null, loading: true, error: null, token: 0 } };
+  const entry = state.fcBypasses[sceneId][uid];
+  renderForcedResult();
+  try {
+    const result = await api('POST', '/api/forced-choice/bypass', {
+      story: state.story, endingScene: sceneId, uid,
+    });
+    if (state.fcBypasses[sceneId] && state.fcBypasses[sceneId][uid] === entry) {
+      entry.result = result;
+      entry.loading = false;
+    }
+  } catch (e) {
+    if (state.fcBypasses[sceneId] && state.fcBypasses[sceneId][uid] === entry) {
+      entry.error = e.message;
+      entry.loading = false;
+    }
+  }
+  renderForcedResult();
+}
+
+function toggleForcedBypass(sceneId, uid) {
+  const slot = state.fcBypasses[sceneId];
+  if (slot && slot._openUid === uid) {
+    delete slot._openUid;
+    renderForcedResult();
+    return;
+  }
+  state.fcBypasses[sceneId] = { ...(slot || {}), _openUid: uid };
+  renderForcedResult();
+  runForcedBypass(sceneId, uid);
+}
+
+function renderForcedPanel() {
+  const card = $('fcCard');
+  if (!state.story) { card.hidden = true; return; }
+  card.hidden = false;
+  $('fcStale').hidden = !state.fcStale;
+  renderForcedResult();
+}
+
+/** 必经路径视图：复用通用路径样式，必经选项边高亮并标注次序 */
+function buildForcedPathView(path, knownVars, forcedOrderByUid) {
+  const wrap = document.createElement('div');
+  wrap.className = 'path-view';
+  (path || []).forEach((node, i, arr) => {
+    if (node.kind === 'scene') {
+      const div = document.createElement('div');
+      div.className = 'path-node scene';
+      const badge = i === 0 ? '<span class="badge badge-ok">起点</span>'
+        : (i === arr.length - 1 ? '<span class="badge badge-err">结局</span>' : '');
+      div.innerHTML = `<span class="pn-title"></span><span class="pn-id"></span>${badge}`;
+      div.querySelector('.pn-title').textContent = node.title || node.sceneId;
+      div.querySelector('.pn-id').textContent = node.sceneId;
+      div.insertAdjacentHTML('beforeend', stateChips(node.state, knownVars || []));
+      wrap.appendChild(div);
+    } else {
+      const div = document.createElement('div');
+      const uid = node.optionUid || (node.fromSceneId != null && node.optionIndex != null
+        ? `idx:${node.fromSceneId}#${node.optionIndex}` : null);
+      const order = forcedOrderByUid && uid ? forcedOrderByUid.get(uid) : null;
+      div.className = 'path-edge' + (order ? ' is-required' : '');
+      div.innerHTML = order ? `<span class="badge badge-req">必经 ${order}</span> ` : '';
+      div.appendChild(document.createTextNode(
+        `选项 ${node.optionIndex != null ? node.optionIndex + 1 : '?'}「${node.optionText || ''}」 → ${node.target}`));
+      if (uid) {
+        const code = document.createElement('code');
+        code.className = 'cov-uid';
+        code.textContent = uid;
+        div.appendChild(code);
+      }
+      if (node.stateAfter) {
+        div.insertAdjacentHTML('beforeend', stateChips(node.stateAfter, knownVars || []));
+      }
+      wrap.appendChild(div);
+    }
+  });
+  return wrap;
+}
+
+function renderForcedResult() {
+  const box = $('fcResult');
+  box.innerHTML = '';
+  const r = state.fcResult;
+  if (!r || !state.story) return;
+
+  const banner = document.createElement('div');
+  if (r.startBlocked) {
+    banner.className = 'pq-banner pq-err';
+    banner.textContent = '✗ 起点场景的前置条件在初始状态下不成立，剧情无法开始，没有任何可达结局。';
+    box.appendChild(banner);
+    return;
+  }
+
+  banner.className = 'pq-banner ' + (r.canAssertForced ? 'pq-ok' : 'pq-warn');
+  banner.textContent = (r.canAssertForced ? '✓ ' : '⚠ ') + r.message;
+  box.appendChild(banner);
+
+  if (r.conditionErrors && r.conditionErrors.length) {
+    const note = document.createElement('div');
+    note.className = 'pq-note';
+    note.textContent = `剧情中存在 ${r.conditionErrors.length} 处条件语法错误，本次分析按恒真处理（详见一致性分析）。`;
+    box.appendChild(note);
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  stats.innerHTML = `
+    <div class="stat"><span>可达终止场景</span><b>${r.counts.endings}</b></div>
+    <div class="stat"><span>必经抉择（结局×选项）</span><b>${r.counts.forcedOptions === null ? '—' : r.counts.forcedOptions}</b></div>
+    <div class="stat"><span>枚举具体状态</span><b>${r.counts.states}</b></div>
+    <div class="stat ${r.canAssertForced ? 'stat-ok' : 'stat-warn'}"><span>结论可靠性</span><b>${r.canAssertForced ? '完整穷举' : '已截断'}</b></div>
+  `;
+  box.appendChild(stats);
+
+  if (!r.endings.length) {
+    const none = document.createElement('div');
+    none.className = 'pq-note';
+    none.textContent = '没有任何可到达的终止场景——所有路线都困在循环中。';
+    box.appendChild(none);
+    return;
+  }
+
+  for (const e of r.endings) {
+    box.appendChild(buildForcedEndingCard(e, r));
+  }
+}
+
+function buildForcedEndingCard(e, r) {
+  const det = document.createElement('details');
+  det.className = 'cov-route fc-ending';
+  det.open = true;
+  const kindBadge = e.kind === 'ending'
+    ? '<span class="badge badge-ok">设计结局</span>'
+    : '<span class="badge badge-warn">死局软锁</span>';
+  const reliableBadge = e.reliable ? '' : '<span class="badge badge-warn">截断·结论不可靠</span>';
+  const statesTxt = e.states > 1 ? `<span class="badge badge-muted">${e.states} 个终止状态</span>` : '';
+  const sum = document.createElement('summary');
+  sum.innerHTML = `<span class="fc-end-title"></span><code class="fc-end-id"></code>`
+    + `${kindBadge}${reliableBadge}${statesTxt}`
+    + `<span class="badge ${e.forcedCount ? 'badge-req' : 'badge-muted'} fc-count-badge"></span>`;
+  sum.querySelector('.fc-end-title').textContent = e.title || e.sceneId;
+  sum.querySelector('.fc-end-id').textContent = e.sceneId;
+  sum.querySelector('.fc-count-badge').textContent = e.forcedCount === null
+    ? '必经：未知（截断）' : `必经 ${e.forcedCount} 项`;
+  det.appendChild(sum);
+
+  const body = document.createElement('div');
+  body.className = 'cov-route-body';
+
+  if (!e.reliable) {
+    // 截断：该结局不下任何必经 / 非必经结论
+    const warn = document.createElement('div');
+    warn.className = 'pq-banner pq-warn';
+    warn.textContent = '状态图展开达到上限被截断，未探索区域可能存在其他到达路线，该结局的必经选项结论不可靠，已隐藏必经列表与反例请求；请减少变量数量后重新分析。';
+    body.appendChild(warn);
+    det.appendChild(body);
+    return det;
+  }
+
+  // 必经选项（按路线先后次序）
+  const forcedLabel = document.createElement('div');
+  forcedLabel.className = 'cov-section-label';
+  forcedLabel.textContent = e.forcedCount
+    ? `所有到达路线共同经过的选项（按路线先后，${e.forcedCount} 项）`
+    : '必经选项（0 项）';
+  body.appendChild(forcedLabel);
+
+  if (!e.forcedCount) {
+    const none = document.createElement('div');
+    none.className = 'pq-note';
+    none.textContent = '不存在必选选项：每个选项都能被某条到达路线绕开（或结局就在起点）。可任选下方任一选项请求绕开反例。';
+    body.appendChild(none);
+  } else {
+    const chain = document.createElement('div');
+    chain.className = 'fc-chain';
+    e.forcedOptions.forEach((f, idx) => {
+      const step = document.createElement('div');
+      step.className = 'fc-chain-step';
+      step.innerHTML = `<span class="fc-order">${f.order}</span>
+        <code class="cov-uid"></code>
+        <span class="fc-opt-loc"></span>`;
+      step.querySelector('.cov-uid').textContent = f.uid;
+      step.querySelector('.fc-opt-loc').textContent =
+        `${f.sceneId}#${f.optionIndex != null ? f.optionIndex + 1 : '?'}「${f.text || '（无文案）'}」→ ${f.target || '（不跳转）'}`;
+      chain.appendChild(step);
+      if (idx < e.forcedOptions.length - 1) {
+        const arrow = document.createElement('span');
+        arrow.className = 'fc-chain-arrow';
+        arrow.textContent = '↓';
+        chain.appendChild(arrow);
+      }
+    });
+    body.appendChild(chain);
+  }
+
+  // 最短见证路径
+  const witLabel = document.createElement('div');
+  witLabel.className = 'cov-section-label';
+  witLabel.textContent = `首次到达的最短见证路径（${e.witnessDepth} 步）`;
+  body.appendChild(witLabel);
+  const orderByUid = new Map((e.forcedOptions || []).map((f) => [f.uid, f.order]));
+  body.appendChild(buildForcedPathView(e.witnessPath, r.knownVars, orderByUid));
+
+  // 绕开反例：该结局可达子图上的非必经选项都可请求（默认候选）；
+  // 必经项也允许尝试，服务端会返回“完整穷举后仍不可绕开”作为验证。
+  const candidateUids = [];
+  const candidateMeta = new Map();
+  for (const f of e.forcedOptions || []) {
+    candidateUids.push(f.uid);
+    candidateMeta.set(f.uid, f);
+  }
+  for (const c of e.candidateOptions || []) {
+    candidateUids.push(c.uid);
+    candidateMeta.set(c.uid, c);
+  }
+  if (candidateUids.length) {
+    const bpLabel = document.createElement('div');
+    bpLabel.className = 'cov-section-label';
+    bpLabel.textContent = '绕开反例：选择一个选项，请求不经过它仍到达该结局的最短路线';
+    body.appendChild(bpLabel);
+
+    const pickRow = document.createElement('div');
+    pickRow.className = 'fc-bypass-row';
+    const sel = document.createElement('select');
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '（选择要绕开的选项）';
+    sel.appendChild(ph);
+    for (const uid of candidateUids) {
+      const m = candidateMeta.get(uid) || {};
+      const forced = orderByUid.has(uid);
+      const opt = document.createElement('option');
+      opt.value = uid;
+      const loc = m.sceneId
+        ? `${forced ? '［必经·应无反例］' : '［非必经］'} ${m.sceneId}#${m.optionIndex != null ? m.optionIndex + 1 : '?'}「${m.text || ''}」`
+        : uid;
+      opt.textContent = loc;
+      sel.appendChild(opt);
+    }
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-small';
+    btn.textContent = '🔍 请求绕开路线';
+    btn.addEventListener('click', () => {
+      if (!sel.value) return toast('请先选择要绕开的选项');
+      toggleForcedBypass(e.sceneId, sel.value);
+    });
+    pickRow.append(sel, btn);
+    body.appendChild(pickRow);
+
+    const slot = state.fcBypasses[e.sceneId];
+    if (slot && slot._openUid) {
+      const entry = slot[slot._openUid];
+      const bpBox = document.createElement('div');
+      bpBox.className = 'fc-bypass-result';
+      if (entry && entry.loading) {
+        bpBox.className = 'pq-note';
+        bpBox.textContent = '正在搜索绕开路线……';
+      } else if (entry && entry.error) {
+        const err = document.createElement('div');
+        err.className = 'pq-banner pq-err';
+        err.textContent = `绕开查询失败：${entry.error}`;
+        bpBox.appendChild(err);
+      } else if (entry && entry.result) {
+        bpBox.appendChild(buildForcedBypassView(entry.result, r.knownVars));
+      }
+      body.appendChild(bpBox);
+    }
+  }
+
+  det.appendChild(body);
+  return det;
+}
+
+function buildForcedBypassView(b, knownVars) {
+  const frag = document.createDocumentFragment();
+  const banner = document.createElement('div');
+  if (b.found) {
+    banner.className = 'pq-banner pq-ok';
+    banner.textContent = `✓ ${b.message}`;
+  } else {
+    banner.className = b.canAssertUnavoidable ? 'pq-banner pq-err' : 'pq-banner pq-warn';
+    banner.textContent = (b.canAssertUnavoidable ? '✗ ' : '⚠ ') + b.message;
+  }
+  frag.appendChild(banner);
+  if (b.found && b.path) {
+    // 反例路径中被绕开的选项不应出现（防御性断言，正常必然成立）
+    frag.appendChild(buildForcedPathView(b.path, knownVars, null));
+  }
+  return frag;
 }
 
 /* ============================================================
@@ -2217,6 +2547,7 @@ function bindGlobalEvents() {
   });
   $('btnAnalyze').addEventListener('click', () => runAnalysis(state.dirty));
   $('btnRunProb').addEventListener('click', runProbability);
+  $('btnRunForced').addEventListener('click', runForcedChoices);
   $('btnRunCoverage').addEventListener('click', runCoverage);
   $('btnCloseDetail').addEventListener('click', () => $('detailPanel').hidden = true);
   $('btnSaveBaseline').addEventListener('click', saveBaseline);

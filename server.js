@@ -8,6 +8,7 @@ const { queryPath } = require('./src/pathquery');
 const { inferEndings } = require('./src/probability');
 const { planCoverage } = require('./src/coverage');
 const { replayRoute } = require('./src/replay');
+const { analyzeForcedChoices, bypassForced } = require('./src/forcedchoice');
 const { buildBaseline, compareWithBaseline } = require('./src/baseline');
 
 const app = express();
@@ -99,6 +100,43 @@ app.get('/api/stories/:id/probability', wrap((req, res) => {
   const story = storage.getStory(req.params.id);
   if (!story) return res.status(404).json({ error: '剧情不存在' });
   res.json(inferEndings(story));
+}));
+
+// ---- 结局必经抉择：对请求体中的草稿剧情直接分析（不落盘），供编辑页面板实时使用 ----
+// 请求体即剧情（或 { story: <剧情> }）。在「场景 + 完整变量状态」图上用标签数据流
+// 不动点精确求每个可达终止场景的所有到达路线共同经过的稳定选项 UID（含环 / 同场景
+// 多状态仍精确终止，不枚举固定深度路径）；状态上限截断时 canAssertForced=false 且
+// 不下必经结论。另附每个结局必经选项的先后次序与首次到达的最短见证路径。
+app.post('/api/forced-choice', wrap((req, res) => {
+  const body = req.body || {};
+  const story = body.story !== undefined ? body.story : body;
+  const opts = Number.isInteger(body.maxStates) && body.maxStates > 0 ? { maxStates: body.maxStates } : {};
+  res.json(analyzeForcedChoices(story, opts));
+}));
+
+// ---- 对已保存的剧情分析结局必经抉择 ----
+app.get('/api/stories/:id/forced-choice', wrap((req, res) => {
+  const story = storage.getStory(req.params.id);
+  if (!story) return res.status(404).json({ error: '剧情不存在' });
+  res.json(analyzeForcedChoices(story));
+}));
+
+// ---- 绕开反例：求一条不经过指定选项 UID 仍到达指定终止场景的最短路线 ----
+// 请求体：{ story?, endingScene, uid }。找不到时区分“确为必经（已完整穷举）”
+// 与“因截断不能断言”（canAssertUnavoidable）。UID / 结局场景无效返回 400。
+app.post('/api/forced-choice/bypass', wrap((req, res) => {
+  const body = req.body || {};
+  const story = body.story !== undefined ? body.story : body;
+  const opts = Number.isInteger(body.maxStates) && body.maxStates > 0 ? { maxStates: body.maxStates } : {};
+  res.json(bypassForced(story, body.endingScene, body.uid, opts));
+}));
+
+// ---- 对已保存剧情查询绕开反例（请求体：{ endingScene, uid }） ----
+app.post('/api/stories/:id/forced-choice/bypass', wrap((req, res) => {
+  const story = storage.getStory(req.params.id);
+  if (!story) return res.status(404).json({ error: '剧情不存在' });
+  const body = req.body || {};
+  res.json(bypassForced(story, body.endingScene, body.uid));
 }));
 
 // ---- 选项覆盖路线：对请求体中的草稿剧情直接生成（不落盘），供编辑页覆盖面板实时使用 ----

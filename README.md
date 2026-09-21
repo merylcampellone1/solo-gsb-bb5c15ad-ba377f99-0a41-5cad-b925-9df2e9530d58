@@ -1,6 +1,6 @@
 # 分支剧情一致性审校台（Branching Story Auditor）
 
-一个用于检查 **分支剧情 / 互动叙事脚本一致性** 的 Web 应用。支持为每个场景设置 **布尔前置条件、进入时状态赋值**，为每个选项设置 **显示条件、状态赋值、跳转目标和正整数权重**，并指定剧情起点。后端会从起点出发，按 **「场景 + 变量状态」组合状态** 进行穷举传播与去重，因此即使剧情包含环路（可反复返回的场景），分析也保证终止。基于同一状态图，还可以对编辑中的草稿做 **结局概率推演**：精确求解各终止场景的最终到达概率，并单独列出永远困在循环中的概率质量；以及生成 **选项覆盖路线**：用确定性贪心集合覆盖压缩出一组可执行路线，让所有实际可走的选项至少被走一遍。
+一个用于检查 **分支剧情 / 互动叙事脚本一致性** 的 Web 应用。支持为每个场景设置 **布尔前置条件、进入时状态赋值**，为每个选项设置 **显示条件、状态赋值、跳转目标和正整数权重**，并指定剧情起点。后端会从起点出发，按 **「场景 + 变量状态」组合状态** 进行穷举传播与去重，因此即使剧情包含环路（可反复返回的场景），分析也保证终止。基于同一状态图，还可以对编辑中的草稿做 **结局概率推演**：精确求解各终止场景的最终到达概率，并单独列出永远困在循环中的概率质量；生成 **选项覆盖路线**：用确定性贪心集合覆盖压缩出一组可执行路线，让所有实际可走的选项至少被走一遍；以及分析 **结局必经抉择**：精确求出每个可达终止场景的全部到达路线共同经过的稳定选项（含环、同场景多状态仍精确终止），并给出必经次序、最短见证路径与绕开反例查询。
 
 ## 能发现什么问题
 
@@ -185,6 +185,20 @@ npm start
 
 响应要点：`endings`（`sceneId` / `title` / `kind`：`ending` 或 `deadend` / `probability` / 吸收态数 `states`，按概率降序）、`totalEndingProbability`、`loopProbability`、`loops`（每个陷阱循环的 `probability`、涉及的 `scenes`、包含的具体状态数 `states`）、`counts`（具体状态数、转移数等）、`solver`（`exact` / `iterative` / `trivial`）、`conditionErrors`（语法错误按恒真处理的计数）。任意一次完整推演都有 `totalEndingProbability + loopProbability = 1`。
 
+## 结局必经抉择
+
+编辑页右侧的「结局必经抉择」面板回答：**“无论玩家怎么走，要到达某个结局，必定要选哪些选项？它们的先后次序如何？首次到达该结局的最短路线长什么样？”**
+
+1. 点击「分析必经选项」，后端对 **编辑中的未保存草稿**（不落盘）展开「场景 + 完整变量状态」具体状态图（与分析器相同的 BFS 去重与约 100 万状态上限）；
+2. 终止具体状态 = 该状态下没有任何「条件成立且目标可进入」的选项：场景本身无选项记为 **设计结局**（`ending`），有选项但全部不可走记为 **死局软锁**（`deadend`）；**同一场景可能对应多个不同变量状态的终止节点**；
+3. **必经判定不是枚举固定深度路径**：某选项 UID 对结局必经，当且仅当**每一条**从起点到该结局任一终止状态的路线都经过它。后端在「能到达该结局的存活子图」上做选项标签数据流的最大不动点 `F(v) = ⋂（F(u) ∪ {边标签}）`（起点为空集，其余以全集初始化、按逆边 worklist 单调收缩），结局必经 = 各终止节点 `F(t)` 的交集。取值在有限标签幂集上只做集合交，单调下降，所以**含任意环路都必然收敛终止**；同场景多状态由终止节点交集正确处理；
+4. 每个结局展示：**必经选项的先后次序**（所有必经选项都出现在每条到达路线上，次序取「首次到达」BFS 最短见证路径上的首次出现位置）、**首次到达的最短见证路径**（场景节点带完整变量状态，必经选项边标注「必经 N」）；
+5. **绕开反例**：从该结局可达子图的选项中任选一个，可请求一条**不经过该选项**仍到达该结局的最短路线。非必经选项必然能找到反例；对必经选项，完整穷举后仍不可绕开时明确回复「确为必经」；
+6. **状态上限截断时不下任何必经结论**：结果以 `canAssertForced: false` 标明，已发现的结局标记 `reliable: false` 并隐藏必经列表与反例请求（未探索区域可能存在推翻结论的路线）；绕开查询在截断时也以 `canAssertUnavoidable: false` 标明不能断言必经；
+7. 分析针对编辑中的草稿；**草稿或起点变化后，旧结果标记为「可能过期」**，重新「分析必经选项」即可。
+
+响应要点：`canAssertForced`（是否可下必经结论）、`truncated`、`counts`（状态数、转移数、`forcedOptions`：截断时为 `null`）、`endings[]`（`sceneId` / `title` / `kind`：`ending` 或 `deadend` / `reliable` / 终止状态数 `states` / `forcedCount` / `forcedOptions[]`：`order`、`uid`、`sceneId`、`optionIndex`、`text`、`target` / `candidateOptions[]`：该结局可达子图上的非必经选项（绕开反例候选）/ `witnessDepth` / `witnessPath` / `finalState`；截断时结论字段为 `null`）。绕开接口响应要点：`found`（是否存在反例）、`depth`、`path`、`finalState`、`canAssertUnavoidable`（完整穷举后仍不可绕开才为 `true`）、`truncated`。
+
 ## 选项覆盖路线
 
 编辑页右侧的「选项覆盖路线」面板回答：**“至少要跑哪些路线，才能让每条实际可走的选项都至少被走一遍？”**
@@ -228,6 +242,10 @@ npm start
 | `POST` | `/api/stories/:id/pathquery` | 对已保存剧情做目标路径查询，请求体即 `query` |
 | `POST` | `/api/probability` | 结局概率推演：对请求体中的草稿剧情直接推演（不落盘），请求体即剧情或 `{ story }`；非法权重返回 400 |
 | `GET` | `/api/stories/:id/probability` | 对已保存剧情做结局概率推演 |
+| `POST` | `/api/forced-choice` | 结局必经抉择：对请求体中的草稿剧情直接分析（不落盘），请求体即剧情或 `{ story }`（可注入测试用 `maxStates`） |
+| `GET` | `/api/stories/:id/forced-choice` | 对已保存剧情分析结局必经抉择 |
+| `POST` | `/api/forced-choice/bypass` | 绕开反例：求不经过指定选项 UID 仍到达终止场景的最短路线，请求体 `{ story, endingScene, uid }` |
+| `POST` | `/api/stories/:id/forced-choice/bypass` | 对已保存剧情查询绕开反例，请求体 `{ endingScene, uid }` |
 | `POST` | `/api/coverage` | 选项覆盖路线：对请求体中的草稿剧情直接生成（不落盘），请求体即剧情或 `{ story }` |
 | `GET` | `/api/stories/:id/coverage` | 对已保存剧情生成选项覆盖路线 |
 | `POST` | `/api/coverage/replay` | 覆盖路线逐步回放：对请求体中的草稿剧情重放（不保存、不修改草稿），请求体 `{ story, route: { options, path? } }` |
@@ -256,12 +274,13 @@ npm start
 
 ```
 .
-├── server.js              # Express 入口与 REST API（含基线、目标路径查询、结局概率推演、选项覆盖路线与逐步回放接口）
+├── server.js              # Express 入口与 REST API（含基线、目标路径查询、结局概率推演、结局必经抉择、选项覆盖路线与逐步回放接口）
 ├── src/
 │   ├── expression.js      # 布尔表达式递归下降解析器 / 求值 / 失败解释
 │   ├── analyzer.js        # 「场景+状态」BFS 传播去重分析引擎（附带问题指纹）
 │   ├── pathquery.js       # 目标路径查询：必经序号+场景+状态 BFS 求最短链 / 差异最少状态
 │   ├── probability.js     # 结局概率推演：状态图展开、SCC 分解、吸收概率精确求解
+│   ├── forcedchoice.js    # 结局必经抉择：标签数据流不动点求共同必经选项 / 绕开反例 BFS
 │   ├── coverage.js        # 选项覆盖路线：可走选项见证路径 + 确定性贪心集合覆盖压缩
 │   ├── replay.js          # 覆盖路线逐步回放：按稳定 UID 用当前草稿逐步重校验，停在首个分歧点
 │   ├── weight.js          # 选项正整数权重的统一校验（保存 / 导入 / 推演共用）
@@ -280,6 +299,7 @@ npm start
 │   ├── baseline.js        # 指纹 / 基线对比 / 持久化自检（node test/baseline.js）
 │   ├── pathquery.js       # 目标路径查询与 API 自检（node test/pathquery.js）
 │   ├── probability.js     # 结局概率推演核心算法与 API 自检（node test/probability.js）
+│   ├── forcedchoice.js    # 结局必经抉择（不动点必经 / 次序 / 见证 / 绕开反例）与 API 自检（node test/forcedchoice.js）
 │   ├── coverage.js        # 选项覆盖路线与 API 自检（node test/coverage.js）
 │   ├── replay.js          # 覆盖路线逐步回放与 API 自检（node test/replay.js）
 │   └── healthcheck.js     # 健康检查探针回归测试（node test/healthcheck.js）
@@ -290,7 +310,7 @@ npm start
 自检：
 
 ```bash
-npm test          # 依次运行 smoke.js、baseline.js、pathquery.js、probability.js、coverage.js、replay.js 与 healthcheck.js
+npm test          # 依次运行 smoke.js、baseline.js、pathquery.js、probability.js、forcedchoice.js、coverage.js、replay.js 与 healthcheck.js
 ```
 
 ## 技术栈

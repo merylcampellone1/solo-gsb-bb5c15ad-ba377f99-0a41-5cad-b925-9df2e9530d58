@@ -416,6 +416,31 @@ code {
 .prob-bar-fill.fill-warn { background: var(--warning); }
 .prob-bar-fill.fill-err { background: var(--danger); }
 
+/* ---------- 结局必经抉择 ---------- */
+.fc-card { max-height: 46%; display: flex; flex-direction: column; }
+.fc-card .fc-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.fc-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; }
+.fc-ending summary { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fc-end-title { font-weight: 700; font-size: 13px; }
+.fc-end-id { font-size: 11px; color: var(--muted); }
+.fc-count-badge { margin-left: auto; }
+.fc-chain { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; margin: 4px 0 6px; }
+.fc-chain-step {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--primary); border-left-width: 3px;
+  border-radius: 6px; background: #f4f7ff; padding: 4px 10px; font-size: 12px;
+}
+.fc-order {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; border-radius: 9px;
+  background: var(--primary); color: #fff; font-size: 11px; font-weight: 700;
+}
+.fc-chain-step .fc-opt-loc { color: var(--text); }
+.fc-chain-arrow { color: var(--primary); font-size: 11px; margin-left: 17px; line-height: 1; }
+.fc-bypass-row { display: flex; gap: 6px; margin: 4px 0; }
+.fc-bypass-row select { flex: 1; min-width: 0; }
+.fc-bypass-result { margin-top: 4px; display: flex; flex-direction: column; gap: 6px; }
+
 /* ---------- 选项覆盖路线 ---------- */
 .cov-card { max-height: 46%; display: flex; flex-direction: column; }
 .cov-card .cov-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
