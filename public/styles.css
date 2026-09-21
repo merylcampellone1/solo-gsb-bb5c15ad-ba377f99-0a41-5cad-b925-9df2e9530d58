@@ -445,6 +445,52 @@ code {
 .cov-excluded .cov-ex-loc { color: var(--text); }
 .cov-excluded .cov-uid { background: #eef1f6; color: var(--muted); }
 
+/* ---------- 结局必经抉择 ---------- */
+.gate-card { max-height: 46%; display: flex; flex-direction: column; }
+.gate-card .gate-result { overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.gate-hint { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; }
+.gate-ending { border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.gate-ending > summary {
+  cursor: pointer; padding: 7px 10px; font-size: 12.5px; font-weight: 600;
+  list-style: none; display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+}
+.gate-ending > summary::-webkit-details-marker { display: none; }
+.gate-ending > summary::before { content: '▸'; color: var(--muted); }
+.gate-ending[open] > summary::before { content: '▾'; }
+.gate-ending > summary .gate-title { font-weight: 700; }
+.gate-ending > summary .gate-id {
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted);
+}
+.gate-ending > summary .gate-sum-states { font-size: 11px; color: var(--muted); }
+.gate-ending-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 7px; }
+.gate-section-label { font-size: 12px; font-weight: 700; color: var(--muted); margin-top: 2px; }
+.gate-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.gate-list li {
+  display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap;
+  counter-increment: gate-step; font-size: 12.5px;
+}
+.gate-list { counter-reset: gate-step; }
+.gate-list li::before {
+  content: counter(gate-step); flex-shrink: 0;
+  min-width: 18px; height: 18px; line-height: 18px; text-align: center;
+  border-radius: 50%; background: var(--primary); color: #fff; font-size: 11px; font-weight: 700;
+}
+.gate-uid {
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+  background: var(--primary); color: #fff; border-radius: 4px; padding: 1px 5px;
+}
+.gate-list .gate-uid { background: var(--info-bg); color: var(--primary); }
+.gate-opt-text { font-size: 12px; color: var(--text); }
+.gate-ce-row {
+  border: 1px solid var(--border); border-radius: 8px; padding: 6px 9px;
+  display: flex; flex-direction: column; gap: 6px; background: #fff;
+}
+.gate-ce-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.gate-ce-btn { margin-left: auto; flex-shrink: 0; }
+.gate-ending .path-edge code.gate-edge-uid {
+  margin-right: 4px; background: #eef1f6; color: var(--muted);
+}
+
 /* ---------- 覆盖路线：逐步回放 ---------- */
 .cov-replay-toggle { margin-left: auto; }
 .cov-replay-toggle.cov-replay-on { background: var(--warning-bg); border-color: #eccb8e; color: var(--warning); }

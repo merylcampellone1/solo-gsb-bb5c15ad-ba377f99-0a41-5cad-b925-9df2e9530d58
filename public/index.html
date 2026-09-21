@@ -174,6 +174,16 @@
         <div id="covResult" class="cov-result"></div>
       </section>
 
+      <section id="gateCard" class="card gate-card" hidden>
+        <div class="card-head">
+          <h2>结局必经抉择</h2>
+          <button id="btnRunGates" class="btn btn-small btn-primary">分析必经抉择</button>
+        </div>
+        <div class="gate-hint">对每个可达终止场景，在「场景 + 完整变量状态」图上求所有到达路线共同经过的稳定选项（含环用不动点闭包计算，非固定深度枚举）；给出必经次序、首次到达的最短见证路径；非必经选项可一键求一条绕开它仍到达该结局的反例路线。</div>
+        <div id="gateStale" class="diff-stale" hidden>⚠ 草稿或起点已修改，以下结果可能过期，请重新「分析必经抉择」</div>
+        <div id="gateResult" class="gate-result"></div>
+      </section>
+
       <section id="detailPanel" class="card detail-card" hidden>
         <div class="card-head">
           <h2 id="detailTitle">问题详情</h2>

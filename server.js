@@ -8,6 +8,7 @@ const { queryPath } = require('./src/pathquery');
 const { inferEndings } = require('./src/probability');
 const { planCoverage } = require('./src/coverage');
 const { replayRoute } = require('./src/replay');
+const { endingGates, endingCounterexample } = require('./src/endinggates');
 const { buildBaseline, compareWithBaseline } = require('./src/baseline');
 
 const app = express();
@@ -136,6 +137,42 @@ app.post('/api/stories/:id/coverage/replay', wrap((req, res) => {
   const body = req.body || {};
   const route = body.route !== undefined ? body.route : body;
   res.json(replayRoute(story, route));
+}));
+
+// ---- 结局必经抉择：对请求体中的草稿剧情直接分析（不落盘），供编辑页面板实时使用 ----
+// 请求体即剧情（或 { story: <剧情> }）。在「场景 + 变量状态」图上，对每个可达终止
+// 场景用最大不动点闭包（含环必然终止，非固定深度枚举）求全部到达路线共同经过的
+// 稳定选项 UID，给出必经次序、首次到达的最短见证路径与可绕开的非必经选项。
+// 状态上限截断时不输出任何必经结论（endings 为 null）。
+app.post('/api/ending-gates', wrap((req, res) => {
+  const body = req.body || {};
+  const story = body.story !== undefined ? body.story : body;
+  res.json(endingGates(story));
+}));
+
+// ---- 对已保存的剧情分析结局必经抉择 ----
+app.get('/api/stories/:id/ending-gates', wrap((req, res) => {
+  const story = storage.getStory(req.params.id);
+  if (!story) return res.status(404).json({ error: '剧情不存在' });
+  res.json(endingGates(story));
+}));
+
+// ---- 结局必经抉择反例：绕开指定 UID 的选项后是否仍能到达指定结局 ----
+// 请求体：{ story?, endingSceneId, uid }（草稿不保存）；找到 => 最短反例路线；
+// 完整穷举后仍未找到 => canAssertUnsolvable=true（该选项确为必经）。
+app.post('/api/ending-gates/counterexample', wrap((req, res) => {
+  const body = req.body || {};
+  const story = body.story !== undefined ? body.story : body;
+  res.json(endingCounterexample(story, { endingSceneId: body.endingSceneId, uid: body.uid }));
+}));
+
+// ---- 对已保存剧情求结局必经抉择反例（请求体即 { endingSceneId, uid }） ----
+app.post('/api/stories/:id/ending-gates/counterexample', wrap((req, res) => {
+  const story = storage.getStory(req.params.id);
+  if (!story) return res.status(404).json({ error: '剧情不存在' });
+  const body = req.body || {};
+  const query = body.query !== undefined ? body.query : body;
+  res.json(endingCounterexample(story, query));
 }));
 
 // ---- 分析基线：把当前（通常是编辑中的）分析结果保存为基线，随剧情 JSON 持久化 ----

@@ -24,6 +24,9 @@ const state = {
   covStale: false,        // 生成路线之后剧情又被编辑过
   covReplay: null,        // 逐步回放状态 { routeIndex, uids, result, loading, cursor }
   covReplayTimer: null,   // 草稿变化后回放结果的防抖重算定时器
+  gateResult: null,       // 最近一次结局必经抉择结果
+  gateStale: false,       // 分析之后草稿或起点又被修改过
+  gateCounterexamples: null, // 每个结局的反例结果 { [sceneId]: { uid, loading, result, error } }
   dirty: false,
   saving: false,
 };
@@ -86,6 +89,9 @@ async function openStory(id) {
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
+  state.gateResult = null;
+  state.gateStale = false;
+  state.gateCounterexamples = null;
   $('storySelect').value = id;
   renderAll();
   await runAnalysis(false);
@@ -152,6 +158,9 @@ async function deleteStory() {
   state.covResult = null;
   state.covStale = false;
   resetCoverageReplay();
+  state.gateResult = null;
+  state.gateStale = false;
+  state.gateCounterexamples = null;
   const next = await loadList();
   if (next) await openStory(next);
   else { renderAll(); toast('已删除'); }
@@ -198,6 +207,7 @@ function renderAll() {
   renderPathQueryPanel();
   renderProbabilityPanel();
   renderCoveragePanel();
+  renderGatesPanel();
   renderDetail(null);
 }
 
@@ -516,12 +526,14 @@ function markDirty(rerender) {
   markPathQueryStale();
   markProbabilityStale();
   markCoverageStale();
+  markGatesStale();
   renderSaveStatus();
   if (rerender) rerender();
   else renderAnalysis();
   renderPathQueryPanel(); // 内部有签名缓存，场景/变量未变时仅刷新过期提示与结果
   renderProbabilityPanel(); // 仅刷新过期提示与已展示的结果，不重新推演
   renderCoveragePanel(); // 仅刷新过期提示与已展示的路线，不重新生成
+  renderGatesPanel(); // 仅刷新过期提示与已展示的结果，不重新分析
   clearTimeout(reanalyzeTimer);
   reanalyzeTimer = setTimeout(() => runAnalysis(true), 500);
 }
@@ -1818,6 +1830,271 @@ function renderCoverageResult() {
 }
 
 
+/* ============================================================
+ * 结局必经抉择
+ * ============================================================ */
+function markGatesStale() {
+  if (!state.gateResult) return;
+  state.gateStale = true;
+  const el = $('gateStale');
+  if (el) el.hidden = false;
+}
+
+async function runGates() {
+  if (!state.story) return;
+  try {
+    // 对编辑中的草稿（未保存）直接分析，不落盘
+    state.gateResult = await api('POST', '/api/ending-gates', state.story);
+    state.gateStale = false;
+    state.gateCounterexamples = {};
+    renderGatesPanel();
+  } catch (e) {
+    toast(`结局必经抉择分析失败：${e.message}`);
+  }
+}
+
+/** 请求某结局上绕开某选项的反例路线（同一张「场景+状态」图，结果按结局暂存） */
+async function runGateCounterexample(sceneId, uid) {
+  if (!state.story || !sceneId || !uid) return;
+  if (!state.gateCounterexamples) state.gateCounterexamples = {};
+  const slot = state.gateCounterexamples[sceneId] ||
+    (state.gateCounterexamples[sceneId] = {});
+  slot[uid] = { loading: true, result: null, error: null };
+  renderGatesResult();
+  try {
+    const result = await api('POST', '/api/ending-gates/counterexample', {
+      story: state.story, endingSceneId: sceneId, uid,
+    });
+    slot[uid] = { loading: false, result, error: null };
+  } catch (e) {
+    slot[uid] = { loading: false, result: null, error: e.message };
+  }
+  renderGatesResult();
+}
+
+function renderGatesPanel() {
+  const card = $('gateCard');
+  if (!state.story) { card.hidden = true; return; }
+  card.hidden = false;
+  $('gateStale').hidden = !state.gateStale;
+  renderGatesResult();
+}
+
+/** 必经 / 见证 / 反例路线的统一路径视图（场景节点带状态，选项边带选择后状态） */
+function buildGatePathView(path, knownVars, opts = {}) {
+  const wrap = document.createElement('div');
+  wrap.className = 'path-view';
+  (path || []).forEach((node, i, arr) => {
+    if (node.kind === 'scene') {
+      const div = document.createElement('div');
+      div.className = 'path-node scene';
+      const badge = i === 0 ? '<span class="badge badge-ok">起点</span>'
+        : (opts.markEnd && i === arr.length - 1
+          ? `<span class="badge ${opts.endBadgeCls || 'badge-ok'}">${opts.endBadgeText || '结局'}</span>` : '');
+      div.innerHTML = `<span class="pn-title"></span><span class="pn-id"></span>${badge}`;
+      div.querySelector('.pn-title').textContent = node.title || node.sceneId;
+      div.querySelector('.pn-id').textContent = node.sceneId;
+      div.insertAdjacentHTML('beforeend', stateChips(node.state, knownVars || []));
+      wrap.appendChild(div);
+    } else {
+      const div = document.createElement('div');
+      div.className = 'path-edge';
+      div.appendChild(document.createTextNode(
+        `选项 ${node.optionIndex + 1}「${node.optionText || ''}」 → ${node.target}`));
+      div.insertAdjacentHTML('afterbegin',
+        `<code class="gate-edge-uid"></code>`);
+      div.querySelector('.gate-edge-uid').textContent = node.optionUid || '';
+      if (node.stateAfter) {
+        div.insertAdjacentHTML('beforeend', stateChips(node.stateAfter, knownVars || []));
+      }
+      wrap.appendChild(div);
+    }
+  });
+  return wrap;
+}
+
+function gateOptionText(o) {
+  return `${o.sceneId}#${o.optionIndex + 1}「${o.text || '（无文案）'}」→ ${o.target || '（不跳转）'}`;
+}
+
+function renderGatesResult() {
+  const box = $('gateResult');
+  if (!box) return;
+  box.innerHTML = '';
+  const r = state.gateResult;
+  if (!r || !state.story) return;
+
+  const banner = document.createElement('div');
+
+  if (r.startBlocked) {
+    banner.className = 'pq-banner pq-err';
+    banner.textContent = '✗ 起点场景的前置条件在初始状态下不成立，剧情无法开始，没有可达的终止场景。';
+    box.appendChild(banner);
+    return;
+  }
+
+  if (!r.ok || r.truncated) {
+    banner.className = 'pq-banner pq-warn';
+    banner.textContent = `⚠ ${r.message}`;
+    box.appendChild(banner);
+    // 截断时不下必经结论（endings 为 null），仅给计数
+    if (r.counts) {
+      const stats = document.createElement('div');
+      stats.className = 'stats';
+      stats.innerHTML = `
+        <div class="stat stat-warn"><span>已枚举具体状态</span><b>${r.counts.states}</b></div>
+        <div class="stat"><span>状态上限</span><b>${r.maxStates}</b></div>`;
+      box.appendChild(stats);
+    }
+    return;
+  }
+
+  banner.className = 'pq-banner pq-ok';
+  banner.textContent = `✓ ${r.message}`;
+  box.appendChild(banner);
+
+  if (r.conditionErrors && r.conditionErrors.length) {
+    const note = document.createElement('div');
+    note.className = 'pq-note';
+    note.textContent = `剧情中存在 ${r.conditionErrors.length} 处条件语法错误，本次分析按恒真处理（详见一致性分析）。`;
+    box.appendChild(note);
+  }
+
+  const stats = document.createElement('div');
+  stats.className = 'stats';
+  stats.innerHTML = `
+    <div class="stat"><span>终止场景</span><b>${r.counts.endings}</b></div>
+    <div class="stat"><span>终止状态</span><b>${r.counts.endStates}</b></div>
+    <div class="stat"><span>枚举具体状态</span><b>${r.counts.states}</b></div>
+    <div class="stat"><span>可走选项（标签）</span><b>${r.counts.labels}</b></div>`;
+  box.appendChild(stats);
+
+  if (!r.endings.length) {
+    const none = document.createElement('div');
+    none.className = 'pq-note';
+    none.textContent = '没有任何可达的终止状态（剧情可能只有陷阱循环）。';
+    box.appendChild(none);
+    return;
+  }
+
+  r.endings.forEach((e, i) => {
+    const det = document.createElement('details');
+    det.className = 'gate-ending';
+    if (i === 0) det.open = true;
+    const kindBadge = e.kind === 'ending'
+      ? '<span class="badge badge-ok">结局</span>'
+      : '<span class="badge badge-warn">死局</span>';
+    const statesTxt = e.states > 1 ? `（${e.states} 个终止状态）` : '';
+    const sum = document.createElement('summary');
+    sum.innerHTML = `${kindBadge}<span class="gate-title"></span><code class="gate-id"></code>`
+      + `<span class="gate-sum-states"></span>`
+      + `<span class="badge ${e.gateCount ? 'badge-req' : 'badge-muted'}">必经 ${e.gateCount}</span>`
+      + `<span class="badge badge-muted">最短 ${e.depth} 步</span>`;
+    sum.querySelector('.gate-title').textContent = e.title || e.sceneId;
+    sum.querySelector('.gate-id').textContent = e.sceneId;
+    sum.querySelector('.gate-sum-states').textContent = statesTxt;
+    det.appendChild(sum);
+
+    const body = document.createElement('div');
+    body.className = 'gate-ending-body';
+
+    // 必经选项（按最短见证上的首次出现次序）
+    const gateLabel = document.createElement('div');
+    gateLabel.className = 'gate-section-label';
+    gateLabel.textContent = e.gateCount
+      ? `必经选项（${e.gateCount}，按最短见证路线上的首次出现次序）`
+      : '必经选项（0）';
+    body.appendChild(gateLabel);
+    if (!e.gateCount) {
+      const none2 = document.createElement('div');
+      none2.className = 'pq-note';
+      none2.textContent = '到达该结局的路线没有共同经过的选项——存在多条完全不共享选项的路线。';
+      body.appendChild(none2);
+    } else {
+      const list = document.createElement('ol');
+      list.className = 'gate-list';
+      for (const gopt of e.gates) {
+        const li = document.createElement('li');
+        li.innerHTML = `<code class="gate-uid"></code><span class="gate-opt-text"></span>`;
+        li.querySelector('.gate-uid').textContent = gopt.uid;
+        li.querySelector('.gate-opt-text').textContent = gateOptionText(gopt);
+        list.appendChild(li);
+      }
+      body.appendChild(list);
+    }
+
+    // 首次到达的最短见证路径
+    const witLabel = document.createElement('div');
+    witLabel.className = 'gate-section-label';
+    witLabel.textContent = `首次到达的最短见证路径（${e.depth} 步）`;
+    body.appendChild(witLabel);
+    body.appendChild(buildGatePathView(e.path, r.knownVars, {
+      markEnd: true, endBadgeText: e.kind === 'ending' ? '结局' : '死局',
+      endBadgeCls: e.kind === 'ending' ? 'badge-ok' : 'badge-warn',
+    }));
+
+    // 非必经选项 -> 反例
+    const ceLabel = document.createElement('div');
+    ceLabel.className = 'gate-section-label';
+    ceLabel.textContent = `非必经选项（${e.nonMandatoryCount}，可请求绕开它仍到达该结局的反例路线）`;
+    body.appendChild(ceLabel);
+
+    if (!e.nonMandatoryCount) {
+      const all = document.createElement('div');
+      all.className = 'pq-note';
+      all.textContent = '该结局区域内的可走选项全部是必经项。';
+      body.appendChild(all);
+    } else {
+      const ceMap = (state.gateCounterexamples && state.gateCounterexamples[e.sceneId]) || {};
+      for (const opt of e.nonMandatory) {
+        const row = document.createElement('div');
+        row.className = 'gate-ce-row';
+        const selWrap = document.createElement('div');
+        selWrap.className = 'gate-ce-head';
+        const code = document.createElement('code');
+        code.className = 'gate-uid';
+        code.textContent = opt.uid;
+        const loc = document.createElement('span');
+        loc.className = 'gate-opt-text';
+        loc.textContent = gateOptionText(opt);
+        const btn = document.createElement('button');
+        btn.className = 'btn btn-small gate-ce-btn';
+        const slot = ceMap[opt.uid];
+        btn.disabled = !!(slot && slot.loading);
+        btn.textContent = slot && slot.loading ? '求解中…' : '求反例路线';
+        btn.addEventListener('click', () => runGateCounterexample(e.sceneId, opt.uid));
+        selWrap.append(code, loc, btn);
+        row.appendChild(selWrap);
+
+        if (slot && slot.error) {
+          const err = document.createElement('div');
+          err.className = 'pq-banner pq-err';
+          err.textContent = `反例请求失败：${slot.error}`;
+          row.appendChild(err);
+        } else if (slot && slot.result) {
+          const cer = slot.result;
+          const b = document.createElement('div');
+          b.className = 'pq-banner ' + (cer.found ? 'pq-warn' : 'pq-ok');
+          b.textContent = cer.found
+            ? `↯ ${cer.message}`
+            : (cer.canAssertUnsolvable ? `✓ ${cer.message}` : `⚠ ${cer.message}`);
+          row.appendChild(b);
+          if (cer.found && cer.path) {
+            row.appendChild(buildGatePathView(cer.path, r.knownVars, {
+              markEnd: true, endBadgeText: '反例到达', endBadgeCls: 'badge-warn',
+            }));
+          }
+        }
+        body.appendChild(row);
+      }
+    }
+
+    det.appendChild(body);
+    box.appendChild(det);
+  });
+}
+
+
 function fmtTime(iso) {
   if (!iso) return '';
   const d = new Date(iso);
@@ -2218,6 +2495,7 @@ function bindGlobalEvents() {
   $('btnAnalyze').addEventListener('click', () => runAnalysis(state.dirty));
   $('btnRunProb').addEventListener('click', runProbability);
   $('btnRunCoverage').addEventListener('click', runCoverage);
+  $('btnRunGates').addEventListener('click', runGates);
   $('btnCloseDetail').addEventListener('click', () => $('detailPanel').hidden = true);
   $('btnSaveBaseline').addEventListener('click', saveBaseline);
   $('btnRunCompare').addEventListener('click', runCompare);
